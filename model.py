@@ -28,11 +28,11 @@ class ModelArgs:
     max_batch_size: int = 4
     max_seq_len: int = 4096
     vocab_size: int = 32000
-    dim: int = 1024  # Model dimension
+    dim: int = 1024
     n_layers: int = 12
     n_heads: int = 16
     head_dim: int = 64
-    hidden_dim: int = 2048  # Hidden dimension
+    hidden_dim: int = 2048
     rope_theta: float = 10000.0
     rope_scaling: bool = False
     dropout: float = 0.0
@@ -74,20 +74,19 @@ def precompute_freqs_cis(dim: int, max_seq_len: int, theta: float = 10000.0) -> 
     Returns:
         Precomputed frequencies tensor
     """
-    # Make sure dim is even for complex number handling
+    # dim needs to be even
     if dim % 2 != 0:
-        dim = dim - 1  # Adjust to even dimension
+        dim = dim - 1
 
-    # Use only half the dimension since we're dealing with complex numbers
     half_dim = dim // 2
 
     # Compute frequencies
     freqs = 1.0 / (theta ** (torch.arange(0, half_dim).float() / half_dim))
 
-    # Create position tensor
+    #create position tensor
     t = torch.arange(max_seq_len, dtype=torch.float)
 
-    # Outer product of position and frequencies
+    # outer product of position and frequencies
     freqs = torch.outer(t, freqs)  # [max_seq_len, half_dim]
 
     # Convert to complex exponentials
@@ -107,7 +106,6 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     Returns:
         Tensor with rotary embeddings applied
     """
-    # Ensure proper dimensions
     batch_size, seq_len, n_heads, head_dim = x.shape
 
     # Make sure head_dim is even
@@ -117,7 +115,7 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
 
     # Make sure we have enough positions in freqs_cis
     if freqs_cis.shape[0] < seq_len:
-        raise ValueError(f"Not enough positional embeddings. Need {seq_len}, got {freqs_cis.shape[0]}")
+        raise ValueError(f"not enough positional embeddings. Need {seq_len}, got {freqs_cis.shape[0]}")
 
     # Get the frequencies we need for this sequence
     freqs_cis = freqs_cis[:seq_len]
@@ -131,30 +129,29 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     # Reshape freqs_cis for broadcasting: [1, seq, 1, dim/2]
     freqs_cis = freqs_cis.unsqueeze(0).unsqueeze(2)
 
-    # Apply rotation through complex multiplication
+    # apply rotation through complex multiplication
     x_rotated = x_complex * freqs_cis
 
-    # Convert back to real and reshape
+    # convert back to real and reshape
     x_out = torch.view_as_real(x_rotated).reshape(batch_size, seq_len, n_heads, head_dim)
 
     return x_out.type_as(x)
 
-
+# heavily inspired from deepseek v3
 class SelfAttention(nn.Module):
     """Multi-head self-attention with rotary positional embeddings"""
-
+    
     def __init__(self, args: ModelArgs):
         super().__init__()
         self.n_heads = args.n_heads
         self.dim = args.dim
         self.head_dim = args.head_dim
 
-        # Make sure head_dim is even for rotary embeddings
         if self.head_dim % 2 != 0:
             self.head_dim = self.head_dim - 1
             print(f"Warning: head_dim adjusted to {self.head_dim} to be even for rotary embeddings")
 
-        # Initialize Q, K, V projections
+        # Q K V proj.
         self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
         self.wk = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
@@ -163,7 +160,6 @@ class SelfAttention(nn.Module):
         # Scaling factor for attention scores
         self.attn_scale = 1.0 / math.sqrt(self.head_dim)
 
-        # Dropout
         self.dropout = nn.Dropout(args.dropout)
 
         # Key and value caching for inference
@@ -191,7 +187,7 @@ class SelfAttention(nn.Module):
         """
         batch_size, seq_len, _ = x.shape
 
-        # Project to queries, keys, values
+        # Project to q k v
         q = self.wq(x).reshape(batch_size, seq_len, self.n_heads, self.head_dim)
         k = self.wk(x).reshape(batch_size, seq_len, self.n_heads, self.head_dim)
         v = self.wv(x).reshape(batch_size, seq_len, self.n_heads, self.head_dim)
@@ -199,14 +195,12 @@ class SelfAttention(nn.Module):
         # Get the frequencies for the current sequence
         seq_freqs = freqs_cis[start_pos:start_pos + seq_len]
 
-        # Apply rotary embeddings to queries and keys
         q = apply_rotary_emb(q, seq_freqs)
         k = apply_rotary_emb(k, seq_freqs)
 
         # Initialize KV cache for inference if needed
         if start_pos > 0:
             if self.k_cache is None:
-                # Create cache during first inference step
                 self.k_cache = k
                 self.v_cache = v
             else:
@@ -214,7 +208,6 @@ class SelfAttention(nn.Module):
                 self.k_cache = torch.cat([self.k_cache, k], dim=1)
                 self.v_cache = torch.cat([self.v_cache, v], dim=1)
 
-            # Use the cached keys and values
             k = self.k_cache
             v = self.v_cache
 
@@ -226,7 +219,6 @@ class SelfAttention(nn.Module):
         # Compute attention scores
         scores = torch.matmul(q, k.transpose(2, 3)) * self.attn_scale
 
-        # Apply causal mask if provided
         if mask is not None:
             scores = scores + mask.unsqueeze(0).unsqueeze(0)
 
@@ -258,7 +250,7 @@ class FeedForward(nn.Module):
         # SwiGLU activation
         hidden = F.silu(self.w1(x)) * self.w3(x)
 
-        # Output projection
+        # Output proj/
         output = self.w2(hidden)
         output = self.dropout(output)
 
@@ -283,16 +275,16 @@ class TransformerBlock(nn.Module):
             mask: Optional[torch.Tensor] = None,
             start_pos: int = 0
     ) -> torch.Tensor:
-        # Self-attention with residual connection
+        # self-attention
         h = x + self.attn(self.attn_norm(x), freqs_cis, mask, start_pos)
 
-        # Feed-forward with residual connection
+        #feed-forward
         out = h + self.ffn(self.ffn_norm(h))
 
         return out
 
 
-class SimpleLLM(nn.Module):
+class Blu(nn.Module):
     """Simplified transformer language model for running on a single GPU"""
 
     def __init__(self, args: ModelArgs):
@@ -302,7 +294,6 @@ class SimpleLLM(nn.Module):
         # Token embeddings
         self.embedding = nn.Embedding(args.vocab_size, args.dim)
 
-        # Make sure head_dim is even for rotary embeddings
         if args.head_dim % 2 != 0:
             args.head_dim = args.head_dim - 1
             print(f"Warning: head_dim adjusted to {args.head_dim} to be even for rotary embeddings")
@@ -312,7 +303,7 @@ class SimpleLLM(nn.Module):
             TransformerBlock(args) for _ in range(args.n_layers)
         ])
 
-        # Final normalization
+        # final normalization
         self.norm = RMSNorm(args.dim)
 
         # Output projection
@@ -325,7 +316,7 @@ class SimpleLLM(nn.Module):
             theta=args.rope_theta
         )
 
-        # Initialize weights
+        # init weights
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -353,8 +344,6 @@ class SimpleLLM(nn.Module):
             Logits of shape [batch_size, seq_len, vocab_size]
         """
         batch_size, seq_len = tokens.shape
-
-        # Get embeddings
         h = self.embedding(tokens)
 
         # Get the appropriate slice of precomputed freqs
@@ -363,18 +352,18 @@ class SimpleLLM(nn.Module):
         # Prepare mask for causal attention
         mask = None
         if seq_len > 1:
-            # Create causal mask for training or generation
+            # Create causal mask
             mask = torch.full(
                 (seq_len, seq_len),
                 float("-inf"),
                 device=tokens.device
             ).triu_(1)
 
-        # Apply transformer layers
+        # transformer layers
         for layer in self.layers:
             h = layer(h, freqs_cis, mask, start_pos)
 
-        # Apply final normalization
+        # final normalization
         h = self.norm(h)
 
         # Get logits
@@ -404,7 +393,7 @@ class SimpleLLM(nn.Module):
         Returns:
             Generated token ids [batch_size, seq_len + max_new_tokens]
         """
-        # Start with the prompt
+        # prompt
         batch_size, seq_len = prompt_ids.shape
         generated_ids = prompt_ids.clone()
 
@@ -416,7 +405,7 @@ class SimpleLLM(nn.Module):
         # Process the full prompt first (to build the KV cache)
         logits = self(prompt_ids)
 
-        # Initialize stop flags if stop_ids are provided
+        # init stop flags if stop_ids are provided
         stop_flags = None
         if stop_ids is not None:
             stop_flags = torch.zeros(batch_size, dtype=torch.bool, device=prompt_ids.device)
@@ -436,10 +425,10 @@ class SimpleLLM(nn.Module):
             if temperature > 0:
                 logits = logits / temperature
 
-            # Get probabilities
+            # Get probabilities w softmax
             probs = F.softmax(logits[:, -1], dim=-1)
 
-            # Apply top-p sampling
+            # top-p sampling
             if top_p < 1.0:
                 # Sort probabilities in descending order
                 sorted_probs, sorted_indices = torch.sort(probs, dim=-1, descending=True)
@@ -457,17 +446,15 @@ class SimpleLLM(nn.Module):
                 for i in range(batch_size):
                     # Get indices in the original distribution that should be removed
                     remove_idx = sorted_indices[i, to_remove[i]]
-
-                    # Set their probabilities to 0
                     probs[i, remove_idx] = 0
 
-                # Renormalize the probabilities
+                # renormalize the probabilities
                 probs = probs / (probs.sum(dim=-1, keepdim=True) + 1e-8)
 
-            # Sample from the filtered distribution
+            # sample from the filtered distribution
             next_token = torch.multinomial(probs, num_samples=1)
 
-            # Append to the sequence
+            # Append to the seq
             generated_ids = torch.cat([generated_ids, next_token], dim=1)
 
             # Check for stop tokens
@@ -488,18 +475,18 @@ def create_model(
         hidden_dim: int = 2048,
         max_seq_len: int = 4096,
         dropout: float = 0.0
-) -> SimpleLLM:
+) -> Blu:
     """
-    Create a SimpleLLM model with the specified parameters.
+    Create a Blu model with the specified parameters.
 
     Returns:
-        Initialized SimpleLLM model
+        Initialized Blu model
     """
     # Ensure head_dim is even for rotary embeddings
     head_dim = dim // n_heads
     if head_dim % 2 != 0:
         head_dim = head_dim - 1
-        print(f"Warning: head_dim adjusted to {head_dim} to be even for rotary embeddings")
+        print(f"warning: head_dim adjusted to {head_dim} to be even for rotary embeddings")
 
     args = ModelArgs(
         vocab_size=vocab_size,
@@ -512,16 +499,13 @@ def create_model(
         dropout=dropout
     )
 
-    model = SimpleLLM(args)
+    model = Blu(args)
     return model
 
-
-# Example usage
+# should work as long as I didn't fuck anything up
 if __name__ == "__main__":
     # Set precision to BF16 if available, otherwise FP16
     dtype = torch.bfloat16 if torch.cuda.is_available() and hasattr(torch, 'bfloat16') else torch.float16
-
-    # Create a small test model
     model = create_model(
         vocab_size=32000,
         dim=768,
@@ -530,8 +514,6 @@ if __name__ == "__main__":
         hidden_dim=1536,
         max_seq_len=2048
     )
-
-    # Move model to GPU and set precision
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device).to(dtype)
 

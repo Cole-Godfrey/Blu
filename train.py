@@ -231,6 +231,6 @@ def main():
 
     print("Training complete!")
 
-
+# this was like 80% claude sonnet but it works so idc
 if __name__ == "__main__":
     main()

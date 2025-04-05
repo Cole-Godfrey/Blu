@@ -3,7 +3,7 @@ import requests
 import os
 from model import create_model
 
-# Configuration
+# config
 MODEL_PATH = "shakespeare_model.pt"
 DATASET_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
 CONTEXT_LENGTH = 64
@@ -13,8 +13,6 @@ PROMPTS = [
     "Once upon a time",
     "The king",
 ]
-
-# Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
@@ -51,11 +49,12 @@ def download_dataset(url, save_path="shakespeare.txt"):
     return text
 
 
-def fix_rotary_emb_issue(model):
-    """Fix the rotary embedding issue for generation"""
 
-    # Original apply_rotary_emb function is causing problems
-    # Replace it with a simplified version that doesn't use complex position indexing
+def fix_rotary_emb_issue(model):
+    """Fix the rotary embedding issue for generation since it was deciding to not gen positional embeddings correctly and
+    i don't want to wait another hour for this thing to train again"""
+
+    # function to fix this fuckup
     def safe_apply_rotary_emb(x, freqs_cis, start_pos=0):
         batch_size, seq_len, n_heads, head_dim = x.shape
 
@@ -63,11 +62,9 @@ def fix_rotary_emb_issue(model):
         if head_dim % 2 != 0:
             x = x[..., :head_dim - 1]
             head_dim = head_dim - 1
-
-        # Reshape for complex number manipulation
         x_reshaped = x.float().reshape(batch_size, seq_len, n_heads, head_dim // 2, 2)
 
-        # Convert to complex numbers
+        # Convert to complex
         x_complex = torch.view_as_complex(x_reshaped)
 
         # Make sure we don't go out of bounds with positions
@@ -91,12 +88,12 @@ def fix_rotary_emb_issue(model):
         # Apply rotary embeddings via complex multiplication
         x_rotated = x_complex * pos_emb
 
-        # Convert back to real values
+        #convert back to real
         x_out = torch.view_as_real(x_rotated).reshape(batch_size, seq_len, n_heads, head_dim)
 
         return x_out.type_as(x)
 
-    # Monkey patch the apply_rotary_emb function in each attention layer
+    #  patch the apply_rotary_emb function in each attention layer
     def patched_attn_forward(self, x, freqs_cis, mask=None, start_pos=0):
         batch_size, seq_len, _ = x.shape
 
@@ -121,19 +118,19 @@ def fix_rotary_emb_issue(model):
             k = self.k_cache
             v = self.v_cache
 
-        # Transpose for attention computation
+        #transpose for attention computation
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        # Compute attention scores
+        # compute attention scores
         scores = torch.matmul(q, k.transpose(2, 3)) * self.attn_scale
 
-        # Apply causal mask if provided
+        # Apply causal mask if provide
         if mask is not None:
             scores = scores + mask.unsqueeze(0).unsqueeze(0)
 
-        # Apply softmax to get attention weights
+        #  softmax to get attention weights
         attn_weights = torch.nn.functional.softmax(scores, dim=-1, dtype=torch.float32).type_as(x)
         attn_weights = self.dropout(attn_weights)
 
@@ -148,7 +145,6 @@ def fix_rotary_emb_issue(model):
 
     # Patch all attention layers
     for layer in model.layers:
-        # Store the original forward method
         layer.attn.original_forward = layer.attn.forward
         # Replace it with our patched version
         layer.attn.forward = patched_attn_forward.__get__(layer.attn)
@@ -211,7 +207,7 @@ def main():
                 print(f"Generation failed: {e}")
                 print("Attempting simpler generation method...")
 
-                # Fallback to a simpler generation method
+                # Fallback
                 generated_ids = input_ids.clone()
                 for _ in range(100):  # Generate 100 tokens
                     with torch.no_grad():

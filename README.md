@@ -6,7 +6,7 @@ Note that in model.py the class is named SimpleLLM since I didn't have a name fo
 
 ## Features
 
-- Decoder-only transformer architecture optimized for shitty GPUs
+- Decoder-only transformer architecture optimized for sub-optimal GPUs
 - Character-level text gen
 - Rotary positional embeddings (RoPE)
 - RMSNorm for normalization and SwiGLU for feed-forward activation
